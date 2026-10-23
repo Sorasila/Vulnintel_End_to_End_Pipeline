@@ -1,0 +1,45 @@
+name: spike-s4a
+
+on:
+  workflow_dispatch:
+    inputs:
+      auth_type:
+        description: "วิธียืนยันตัวตนกับ Databricks"
+        type: choice
+        options: [oauth, pat]
+        default: oauth
+
+permissions:
+  contents: read
+
+env:
+  DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
+  DATABRICKS_WAREHOUSE_ID: ${{ vars.DATABRICKS_WAREHOUSE_ID }}
+
+jobs:
+  auth-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install "databricks-sdk>=0.40" "databricks-sql-connector>=3.4"
+
+      - name: Auth check (OAuth M2M)
+        if: inputs.auth_type == 'oauth'
+        env:
+          DATABRICKS_AUTH_TYPE: oauth-m2m
+          DATABRICKS_CLIENT_ID: ${{ secrets.DATABRICKS_CLIENT_ID }}
+          DATABRICKS_CLIENT_SECRET: ${{ secrets.DATABRICKS_CLIENT_SECRET }}
+        run: python spikes/s4/dbx_auth_check.py
+
+      - name: Auth check (PAT)
+        if: inputs.auth_type == 'pat'
+        env:
+          DATABRICKS_AUTH_TYPE: pat
+          DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
+        run: python spikes/s4/dbx_auth_check.py
