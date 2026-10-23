@@ -26,8 +26,9 @@ SDK_HTTP_TIMEOUT_S = 10
 SDK_RETRY_TIMEOUT_S = 20
 
 # กัน SQL connector ค้างเมื่อ host ใช้ไม่ได้ (default retry นานถึง 900 วินาที)
-SQL_SOCKET_TIMEOUT_S = 10
-SQL_RETRY_STOP_AFTER_S = 20
+# ต้องเผื่อเวลา cold start ของ warehouse ที่หยุดอยู่ (connector retry 429/503 ระหว่าง start)
+SQL_SOCKET_TIMEOUT_S = 60
+SQL_RETRY_STOP_AFTER_S = 300
 
 
 def require_env(name: str) -> str:
@@ -62,7 +63,13 @@ def check_sql_select_1(ws: WorkspaceClient) -> str:
 
         # OAuth M2M: ให้ connector ขอ token ผ่าน credentials_provider
         def credentials_provider():
-            config = Config(host=f"https://{host}", client_id=client_id, client_secret=client_secret)
+            config = Config(
+                host=f"https://{host}",
+                client_id=client_id,
+                client_secret=client_secret,
+                http_timeout_seconds=SDK_HTTP_TIMEOUT_S,
+                retry_timeout_seconds=SDK_RETRY_TIMEOUT_S,
+            )
             return oauth_service_principal(config)
 
         auth = {"credentials_provider": credentials_provider}
