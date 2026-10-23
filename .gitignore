@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+.ruff_cache/
+dist/
+build/
+*.egg-info/
+
+# Secrets / local config
+.env
+.databricks/
+
+# Spark / Hive local artifacts
+spark-warehouse/
+metastore_db/
+derby.log
+
+# Tooling / OS
+.superpowers/
+.DS_Store
