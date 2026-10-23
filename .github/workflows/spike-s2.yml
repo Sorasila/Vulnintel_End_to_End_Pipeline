@@ -36,6 +36,10 @@ jobs:
   s2:
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    # shell: bash = bash -eo pipefail: ถ้า step ที่ pipe ไป tee ล้ม step ต้องล้มตาม (default ของ Actions ไม่มี pipefail)
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@v4
 
@@ -50,11 +54,11 @@ jobs:
       - uses: databricks/setup-cli@v1.22.1
 
       - name: Upload fixtures (Files API)
-        run: python spikes/s2/upload_fixtures.py --case "$CASE"
+        run: python spikes/s2/upload_fixtures.py --case "$CASE" 2>&1 | tee "$RUNNER_TEMP/upload.log"
 
       - name: Deploy bundle
         working-directory: spikes/s2
-        run: databricks bundle deploy -t dev
+        run: databricks bundle deploy -t dev 2>&1 | tee "$RUNNER_TEMP/deploy.log"
 
       - name: Run Auto Loader probe (serverless job)
         working-directory: spikes/s2
@@ -63,10 +67,16 @@ jobs:
             --params "case=$CASE,run_id=$SPIKE_RUN_ID" 2>&1 | tee "$RUNNER_TEMP/bundle_run.log"
 
       # always(): ให้เห็นผลที่ probe เขียนไว้ แม้ step ก่อนหน้าล้ม
+      # log ของ upload/deploy/run ถูก tee ไว้ที่ $RUNNER_TEMP แล้วสรุปลง Job summary (ผู้ตรวจดูได้จากที่นี่ที่เดียว)
       - name: Summarize results
         if: always()
         run: |
-          if [ -f "$RUNNER_TEMP/bundle_run.log" ]; then
-            { echo "### bundle run output (last 40 lines)"; echo '```'; tail -n 40 "$RUNNER_TEMP/bundle_run.log"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
-          fi
+          for name in upload deploy bundle_run; do
+            log="$RUNNER_TEMP/$name.log"
+            if [ -f "$log" ]; then
+              { echo "### $name output (last 40 lines)"; echo '```'; tail -n 40 "$log"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+            else
+              echo "### $name: step did not run (no log)" >> "$GITHUB_STEP_SUMMARY"
+            fi
+          done
           python spikes/s2/fetch_results.py --case "$CASE" --run_id "$SPIKE_RUN_ID"

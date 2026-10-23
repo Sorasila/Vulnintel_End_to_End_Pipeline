@@ -4,7 +4,7 @@
 args: --case {initial,rerun,new_column,clean_source,reset} --run_id <id> [--task_run_id <id>]
 
 ทุกบรรทัดผลพิมพ์เป็น `RESULT <text>` และเขียนลงตาราง vulnintel_dev.ops.spike_s2_results
-(run_id, case, line, ts) เพื่อให้ workflow ดึงไปแสดงใน step summary
+(run_id, case_name, line, ts) เพื่อให้ workflow ดึงไปแสดงใน step summary
 
 ถ้า stream ล้ม (เช่น schema เปลี่ยน) จะรายงาน RESULT ก่อนแล้ว raise ซ้ำ เพื่อให้ job retry ทำงาน
 ยกเว้น case clean_source ที่ล้มเพราะ option: รายงาน accepted=False แล้วจบแบบสำเร็จ
@@ -34,7 +34,7 @@ METADATA_COLUMNS = {"_load_dttm", "_file_path", "_filename", "_file_size", "_fil
 RESULTS_SCHEMA = StructType(
     [
         StructField("run_id", StringType()),
-        StructField("case", StringType()),
+        StructField("case_name", StringType()),
         StructField("line", StringType()),
         StructField("ts", TimestampType()),
     ]
@@ -86,7 +86,7 @@ def rm_recursive(spark: SparkSession, path: str) -> str:
     except Exception as exc:
         print(f"WARN dbutils.fs.rm failed ({describe(exc)}); falling back to shutil.rmtree", flush=True)
         shutil.rmtree(path, ignore_errors=True)
-        return "shutil.rmtree"
+        return "shutil.rmtree" + (" (FAILED: path still exists)" if os.path.exists(path) else "")
 
 
 def lookup_attempt(task_run_id: str) -> str:
