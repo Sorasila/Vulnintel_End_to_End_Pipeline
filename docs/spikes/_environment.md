@@ -9,7 +9,7 @@
 
 ## Neon (Postgres)
 
-- Region: <!-- -->
+- Region: AWS US East 2 (Ohio), project `vulnintel-cmdb`
 - Postgres version: <!-- -->
 
 ## GCP
@@ -19,9 +19,9 @@
 ## Account ฟรีที่สร้างแล้ว
 
 - [ ] Databricks Free Edition
-- [ ] Neon (free plan)
+- [x] Neon (free plan)
 - [ ] GCP project (ไม่ผูก billing, BigQuery sandbox)
 - [ ] NVD API key
 - [ ] healthchecks.io
 - [ ] Discord webhook
-- [ ] GitHub repo สาธารณะ `vulnintel` (เพิ่มเข้า project แล้ว)
+- [x] GitHub repo สาธารณะ `Sorasila/Vulnintel_End_to_End_Pipeline` (เพิ่มเข้า project แล้ว)
