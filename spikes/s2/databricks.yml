@@ -1,0 +1,44 @@
+# Spike S2: bundle เล็กๆ สำหรับ deploy + run job ที่รัน Auto Loader probe บน serverless
+# host ไม่ได้ระบุที่นี่: CLI อ่านจาก env DATABRICKS_HOST (และ auth จาก DATABRICKS_AUTH_TYPE/CLIENT_ID/CLIENT_SECRET)
+bundle:
+  name: vulnintel-spike-s2
+
+targets:
+  dev:
+    default: true
+
+resources:
+  jobs:
+    spike_s2_autoloader:
+      name: spike_s2_autoloader
+      max_concurrent_runs: 1
+
+      parameters:
+        - name: case
+          default: initial
+        - name: run_id
+          default: local
+
+      # serverless: ไม่ระบุ cluster, ผูก task กับ environment ผ่าน environment_key
+      # environment_version คือ serverless environment version (ใช้ pin pyspark ใน Task 1.1)
+      # ถ้า workspace ปฏิเสธค่านี้ error จะบอกค่าที่ใช้ได้ ให้แก้แล้วบันทึกลง docs/spikes/S2.md
+      environments:
+        - environment_key: default
+          spec:
+            environment_version: "4"
+
+      tasks:
+        - task_key: autoloader_probe
+          environment_key: default
+          spark_python_task:
+            python_file: ./autoloader_probe.py
+            parameters:
+              - "--case"
+              - "{{job.parameters.case}}"
+              - "--run_id"
+              - "{{job.parameters.run_id}}"
+              - "--task_run_id"
+              - "{{task.run_id}}"
+          # กรณี new_column: attempt แรกต้อง fail (schema เปลี่ยน) attempt ที่สอง (retry) ต้องผ่าน
+          max_retries: 1
+          min_retry_interval_millis: 5000

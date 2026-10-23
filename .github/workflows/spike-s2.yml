@@ -1,0 +1,72 @@
+name: spike-s2
+
+# Spike S2: upload NDJSON เข้า UC Volume ผ่าน Files API แล้วรัน Auto Loader (availableNow)
+# บน serverless job ที่ deploy ด้วย Databricks Asset Bundle (spikes/s2/databricks.yml)
+# ผลของ probe ถูกเขียนลงตาราง vulnintel_dev.ops.spike_s2_results แล้ว step สุดท้ายสรุปลง Job summary
+# กด "Run workflow" เสมอ (ไม่ใช้ "Re-run jobs") ลำดับ case: initial -> rerun -> new_column -> clean_source
+
+on:
+  workflow_dispatch:
+    inputs:
+      case:
+        description: "กรณีทดสอบ (reset = ล้าง table/checkpoint/fixtures เพื่อรัน spike ซ้ำ)"
+        type: choice
+        options: [initial, rerun, new_column, clean_source, reset]
+        default: initial
+
+permissions:
+  contents: read
+
+# งาน Databricks ทุก workflow ใช้ group เดียวกัน ไม่ให้รันชนกัน
+concurrency:
+  group: databricks-pipelines
+  cancel-in-progress: false
+
+env:
+  DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
+  DATABRICKS_AUTH_TYPE: oauth-m2m
+  DATABRICKS_CLIENT_ID: ${{ secrets.DATABRICKS_CLIENT_ID }}
+  DATABRICKS_CLIENT_SECRET: ${{ secrets.DATABRICKS_CLIENT_SECRET }}
+  DATABRICKS_WAREHOUSE_ID: ${{ vars.DATABRICKS_WAREHOUSE_ID }}
+  CASE: ${{ inputs.case }}
+  # GITHUB_RUN_ID ไม่เปลี่ยนเมื่อ "Re-run jobs" จึงต่อ attempt ด้วย
+  SPIKE_RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}
+
+jobs:
+  s2:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Python dependencies
+        run: pip install "databricks-sdk>=0.40" "databricks-sql-connector>=3.4"
+
+      # CLI ใหม่ (Go) pin ที่ v1.22.1 ซึ่งเป็น release ที่ตรวจ schema ของ bundle ไว้
+      - uses: databricks/setup-cli@v1.22.1
+
+      - name: Upload fixtures (Files API)
+        run: python spikes/s2/upload_fixtures.py --case "$CASE"
+
+      - name: Deploy bundle
+        working-directory: spikes/s2
+        run: databricks bundle deploy -t dev
+
+      - name: Run Auto Loader probe (serverless job)
+        working-directory: spikes/s2
+        run: |
+          databricks bundle run spike_s2_autoloader -t dev \
+            --params "case=$CASE,run_id=$SPIKE_RUN_ID" 2>&1 | tee "$RUNNER_TEMP/bundle_run.log"
+
+      # always(): ให้เห็นผลที่ probe เขียนไว้ แม้ step ก่อนหน้าล้ม
+      - name: Summarize results
+        if: always()
+        run: |
+          if [ -f "$RUNNER_TEMP/bundle_run.log" ]; then
+            { echo "### bundle run output (last 40 lines)"; echo '```'; tail -n 40 "$RUNNER_TEMP/bundle_run.log"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          fi
+          python spikes/s2/fetch_results.py --case "$CASE" --run_id "$SPIKE_RUN_ID"
