@@ -4,8 +4,8 @@
 
 ## Databricks (Free Edition)
 
-- Workspace region: <!-- เช่น us-east-1 -->
-- Workspace URL host: <!-- เฉพาะ host เช่น dbc-xxxx.cloud.databricks.com -->
+- Workspace region: (Free Edition ไม่แสดง ตรวจภายหลังถ้าจำเป็น)
+- Workspace URL host: `dbc-9895c944-aa73.cloud.databricks.com`
 
 ## Neon (Postgres)
 
@@ -14,13 +14,13 @@
 
 ## GCP
 
-- Project id: <!-- project ไม่ผูก billing (BigQuery sandbox) -->
+- Project id: `custom-dominion-472909-u5` (ไม่ผูก billing, BigQuery sandbox)
 
 ## Account ฟรีที่สร้างแล้ว
 
-- [ ] Databricks Free Edition
+- [x] Databricks Free Edition
 - [x] Neon (free plan)
-- [ ] GCP project (ไม่ผูก billing, BigQuery sandbox)
+- [x] GCP project (ไม่ผูก billing, BigQuery sandbox)
 - [ ] NVD API key
 - [ ] healthchecks.io
 - [ ] Discord webhook
