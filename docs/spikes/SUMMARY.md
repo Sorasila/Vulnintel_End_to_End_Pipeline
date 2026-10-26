@@ -11,7 +11,7 @@
 | S2 | Files API upload + Auto Loader `availableNow` บน serverless | ✅ ทุก case ผ่าน (upload 3 ไฟล์ 2.16 s, path ซ้ำ → `AlreadyExists`, schema evolution ผ่านด้วย retry 1 ครั้ง, `cleanSource` ใช้ได้) | **UC Volume + Files API + Auto Loader** ตาม design | `cloudFiles.cleanSource=DELETE` + `retentionDuration=30 days` แทน job ลบไฟล์รายสัปดาห์, pin `pyspark==4.2.*` / Python 3.12 / `environment_version: "4"` |
 | S3 | ข้อจำกัด "1 active pipeline ต่อประเภท" | ✅ pipeline **ต่างตัวกัน** รันพร้อมกันได้, pipeline **ตัวเดียวกัน** สั่งซ้อน → task ล้มทันที ("Pipeline update already in progress.") และ task retry ไม่ช่วย, job ที่มี pipeline task ต่อกันทำงานปกติ | **concurrency group `databricks-pipelines`** ร่วมทุก workflow ที่สั่ง pipeline | pipeline task `max_retries: 0` (pipeline retry เองอยู่แล้ว), ตั้ง `timeout_seconds` ทุก job, ใช้ `mode: development` แทน `development: true`, SP ต้องมี `CREATE MATERIALIZED VIEW` |
 | S4a | Databricks service principal (OAuth M2M) จาก GitHub Actions | ✅ ผ่าน (หลังสร้าง secret ใหม่ที่มี scope `all-apis`) | **SP `vulnintel-ci` OAuth M2M**, bundle `run_as` SP, ไม่ใช้ PAT | runbook: scope ของ secret, rotate secret ก่อนหมดอายุ, รายการสิทธิ์ของ SP |
-| S4b | GCP OIDC (WIF) + BigQuery sandbox, `WRITE_TRUNCATE` ต่ออายุตารางไหม | ✅ WIF load ผ่าน, ❗ `WRITE_TRUNCATE` **ไม่ต่ออายุ** (expires คงที่ที่ created + 60 วัน), `update_table(["expires"])` เลื่อนได้และไม่ถูก cap, `delete_table` + load ใหม่ก็ได้ | **WIF** (ผูก `repository_id` + `refs/heads/main`), ไม่ใช้ SA key | export ต้อง `update_table` ตั้ง `expires = now + 60 วัน` หลัง load ทุกครั้ง และ monitoring เตือนเมื่อตารางเหลืออายุ < 30 วัน |
+| S4b | GCP OIDC (WIF) + BigQuery sandbox, `WRITE_TRUNCATE` ต่ออายุตารางไหม | ✅ WIF load ผ่าน, ❗ `WRITE_TRUNCATE` **ไม่ต่ออายุ** (expires คงที่ที่ created + 60 วัน), `update_table(["expires"])` เลื่อนได้และไม่ถูก cap, `delete_table` + load ใหม่ก็ได้, Looker Studio ต่อตารางได้ไม่ติดปัญหา | **WIF** (ผูก `repository_id` + `refs/heads/main`), ไม่ใช้ SA key | export ต้อง `update_table` ตั้ง `expires = now + 60 วัน` หลัง load ทุกครั้ง และ monitoring เตือนเมื่อตารางเหลืออายุ < 30 วัน |
 
 ## การตัดสินใจ 5 ข้อ (Gate G0 Step 2)
 
@@ -53,4 +53,4 @@
   - ลบไฟล์ใน `ops/landing` ของ spike
   - ลบ pipeline `spike_s1_qbc` และ connection `neon_cmdb` (ถ้ายังอยู่)
 - Neon: เก็บตาราง `assets`/`asset_software` ไว้ใช้ต่อใน Phase 3 (ไม่มี slot หรือ publication ให้ลบ เพราะไม่ได้เปิด replication)
-- GCP: `bash gcp_setup.sh --cleanup` ลบ dataset `vulnintel_spike` หลังเช็ก Looker Studio เสร็จ (pool, provider และ SA เก็บไว้ใช้ใน production)
+- GCP: `bash gcp_setup.sh --cleanup` ลบ dataset `vulnintel_spike` (เช็ก Looker Studio ผ่านแล้ว) (pool, provider และ SA เก็บไว้ใช้ใน production)
