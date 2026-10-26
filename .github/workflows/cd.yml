@@ -8,7 +8,10 @@ name: cd
 #   (inputs.target ว่างเมื่อ trigger ด้วย workflow_run จึงใช้ prod เป็นค่าเริ่มต้นในกรณีนั้น)
 # secrets: DATABRICKS_HOST, DATABRICKS_CLIENT_ID, DATABRICKS_CLIENT_SECRET (OAuth M2M ของ service principal)
 #   ส่ง client id ให้ bundle variable service_principal_id ผ่าน BUNDLE_VAR_service_principal_id
+# สิทธิ์ deploy: dev สั่งจาก branch ไหนก็ได้ (workflow_dispatch) แต่ prod สั่งมือได้เฉพาะจาก main เท่านั้น
 # concurrency: group databricks-pipelines เดียวกับทุก workflow ที่แตะ pipeline ของ Databricks (Gate G0: 1 update ต่อครั้ง)
+#   ตั้งที่ระดับ job (ไม่ใช่ workflow) เพราะ run ที่ถูก job `if` ข้าม (เช่น CI ล้ม หรือเป็น PR) จะได้ไม่เข้า group
+#   และไม่ไปแทนที่ deploy จริงที่รออยู่
 #   cancel-in-progress: false = deploy ที่รันอยู่ไม่ถูกยกเลิกกลางคัน (GitHub เก็บรอบที่รออยู่ไว้แค่ 1 รอบ รอบเก่าที่รออยู่จะถูกแทนที่)
 # deploy ไม่ใส่ --auto-approve: ถ้า deploy ต้องลบ/สร้าง resource ใหม่ (เช่น schema, pipeline) CLI จะล้มแทนการลบเงียบ ๆ
 
@@ -28,15 +31,14 @@ on:
 permissions:
   contents: read
 
-concurrency:
-  group: databricks-pipelines
-  cancel-in-progress: false
-
 jobs:
   deploy:
     if: >-
-      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_dispatch' && (inputs.target != 'prod' || github.ref == 'refs/heads/main')) ||
       (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push')
+    concurrency:
+      group: databricks-pipelines
+      cancel-in-progress: false
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     defaults:

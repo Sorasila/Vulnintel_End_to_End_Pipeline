@@ -1,6 +1,8 @@
 -- Runbook: เตรียม Unity Catalog สำหรับ asset bundle (Task 1.2)
 -- รันใน Databricks SQL editor โดยเจ้าของ catalog (ผู้ใช้เอง ไม่ใช่ service principal)
 -- เอา <sp-application-id> ออกแล้วแทนด้วย Application ID ของ service principal vulnintel-ci (ไม่ใช่ secret) ก่อนรัน
+-- ลำดับการรัน: ข้อ 1-3 รัน "ก่อน" merge PR #9 (cd deploy prod ครั้งแรกหลัง merge)
+--   ข้อ 4 (DROP) รันครั้งเดียว หลังลบ job/pipeline ของ spike ทั้งหมดแล้ว และก่อน `databricks bundle deploy -t dev` ครั้งแรก
 -- หมายเหตุ: สิทธิ์ CAN USE บน SQL warehouse ให้ grant ผ่าน UI (SQL Warehouses > Permissions) ไม่ใช่ SQL ในไฟล์นี้
 --
 -- bundle (databricks.yml + resources/schemas.yml) สร้างและเป็นเจ้าของ schema กับ volume เอง

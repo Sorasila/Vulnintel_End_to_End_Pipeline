@@ -9,7 +9,8 @@ name: ci
 # secrets (เฉพาะ bundle-validate): DATABRICKS_HOST, DATABRICKS_CLIENT_ID, DATABRICKS_CLIENT_SECRET (OAuth M2M ของ service principal)
 #   PR จาก fork ไม่ได้รับ secret job bundle-validate จะล้มซึ่งถูกต้อง (ไม่ปล่อย secret ให้โค้ดภายนอก)
 # concurrency: ต่อ ref ยกเลิกรอบเก่าของ PR ที่ยังรันอยู่ได้ (CI ไม่แตะ pipeline ของ Databricks จึงไม่ต้องใช้ group databricks-pipelines)
-#   push เข้า main ไม่ยกเลิกกัน เพราะ CI ที่ถูกยกเลิกจะทำให้ cd ข้าม deploy ของ commit นั้น
+#   push เข้า main ไม่ถูกยกเลิกขณะรัน (CI ที่ถูกยกเลิกจะทำให้ cd ข้าม deploy) แต่รอบใหม่ที่รออยู่ในคิวจะแทนที่รอบเก่าที่ยังรออยู่
+#   deploy ของ commit เก่านั้นจึงถูกครอบด้วย commit ใหม่ที่ deploy ทั้งหมดอยู่แล้ว
 
 on:
   pull_request:
@@ -88,7 +89,7 @@ jobs:
       - name: Assert dev schema names are unprefixed
         run: |
           databricks bundle validate -t dev -o json > "$RUNNER_TEMP/dev.json" 2> "$RUNNER_TEMP/dev-json.err"
-          actual=$(jq -r '[.resources.schemas[].name] | sort | join(",")' "$RUNNER_TEMP/dev.json")
+          actual=$(jq -r '[(.resources.schemas // {})[].name] | sort | join(",")' "$RUNNER_TEMP/dev.json")
           expected="bronze,gold,ops,silver"
           {
             echo "### bundle-validate: dev schema names"
@@ -98,7 +99,7 @@ jobs:
             echo
             echo "schemas (resource key -> name):"
             echo '```'
-            jq -r '.resources.schemas | to_entries[] | "\(.key) -> \(.value.name)"' "$RUNNER_TEMP/dev.json"
+            jq -r '(.resources.schemas // {}) | to_entries[] | "\(.key) -> \(.value.name)"' "$RUNNER_TEMP/dev.json"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
           if [ "$actual" != "$expected" ]; then

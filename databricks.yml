@@ -18,6 +18,12 @@ include:
 experimental:
   skip_name_prefix_for_schema: true
 
+# ไม่อัปโหลด spike bundle (spikes/**) และเอกสาร (docs/**) ไปที่ bundle root ใน workspace
+sync:
+  exclude:
+    - spikes/**
+    - docs/**
+
 variables:
   catalog:
     description: Unity Catalog ที่ resource ทั้งหมดอยู่ใน (ตั้งค่าต่อ target)
