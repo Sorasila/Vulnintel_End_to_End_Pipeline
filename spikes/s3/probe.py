@@ -134,7 +134,7 @@ def classify(a: UpdateTrack, b: UpdateTrack) -> tuple[str, str]:
         finals = {t.label: (t.timeline[-1][1] if t.timeline else "NONE") for t in (a, b)}
         return "NEVER_RAN_" + "_".join(never), f"never active (RUNNING/INITIALIZING/SETTING_UP_TABLES): {never}; last states={finals}"
     ov = overlap_seconds(wa, wb)
-    if ov >= POLL_S:
+    if ov >= POLL_S - 0.5:  # เผื่อการปัดเวลา 0.1 s ใน add_state
         return "CONCURRENT", f"overlap_active_s={ov:g}"
     first, second = (a, b) if wa[0][0] <= wb[0][0] else (b, a)
     second_active = (wb if second is b else wa)[0][0]
