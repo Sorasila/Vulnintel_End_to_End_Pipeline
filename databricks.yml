@@ -1,0 +1,43 @@
+# VulnIntel asset bundle: โครงของ pipeline ทั้งหมด (UC schema/volume ตอนนี้ ส่วน job/pipeline จะเพิ่มใน resources/ ภายหลัง)
+# host และ auth ไม่ได้ระบุที่นี่: CLI อ่านจาก env DATABRICKS_HOST, DATABRICKS_AUTH_TYPE=oauth-m2m,
+#   DATABRICKS_CLIENT_ID, DATABRICKS_CLIENT_SECRET (GitHub Secrets ใน CI) ห้ามเขียน host/secret/id ลงไฟล์
+# variable service_principal_id ไม่มีค่า default: CI ส่งผ่าน env BUNDLE_VAR_service_principal_id (ค่าเดียวกับ client id)
+#   ถ้ารันเองในเครื่อง: databricks bundle validate -t dev --var service_principal_id=<application-id>
+# resource key ต้องไม่ซ้ำข้ามประเภท (บทเรียนจาก S1)
+bundle:
+  name: vulnintel
+
+include:
+  - resources/*.yml
+
+variables:
+  catalog:
+    description: Unity Catalog ที่ resource ทั้งหมดอยู่ใน (ตั้งค่าต่อ target)
+  service_principal_id:
+    description: Application ID ของ service principal vulnintel-ci (เท่ากับ OAuth client id ไม่ใช่ secret) ใช้เป็น run_as ของทุก target
+
+targets:
+  dev:
+    mode: development
+    default: true
+    variables:
+      catalog: vulnintel_dev
+    run_as:
+      service_principal_name: ${var.service_principal_id}
+    presets:
+      # mode: development ปกติเติม prefix (dev_<user>_) หน้าชื่อ resource รวมถึง UC schema
+      # (docs: presets override the default mode behavior)
+      # ต้องการให้ schema ชื่อ bronze/silver/gold/ops ตรงกับ catalog vulnintel_dev ที่ใช้จริง จึงตั้ง prefix เป็นค่าว่าง
+      # ผลข้างเคียง: job/pipeline ใน dev จะไม่มี prefix ด้วย (ใช้ dev workspace/catalog คนเดียว จึงไม่ชน)
+      # volume ไม่ถูกใส่ prefix อยู่แล้ว (CLI issue #1779)
+      name_prefix: ''
+
+  prod:
+    mode: production
+    variables:
+      catalog: vulnintel
+    run_as:
+      service_principal_name: ${var.service_principal_id}
+    workspace:
+      # mode: production ไม่ยอมให้ root_path ผูกกับ user คนใดคนหนึ่ง จึงวางที่ /Workspace/Shared
+      root_path: /Workspace/Shared/.bundle/${bundle.name}/${bundle.target}
