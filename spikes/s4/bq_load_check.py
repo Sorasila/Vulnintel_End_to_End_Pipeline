@@ -3,12 +3,13 @@
 
 MODE (env `MODE`, default `load`):
   load           สร้าง Parquet 10 แถว แล้ว load ด้วย WRITE_TRUNCATE ไป vulnintel_spike.t1
-  extend_expiry  load แล้ว update_table(["expires"]) เป็น now+59 วัน (ทาง ก)
+  extend_expiry  load แล้ว update_table(["expires"]) เลื่อนไป expires+1 วัน (ทาง ก) ดูว่า sandbox ยอมเลื่อนหรือ cap
   recreate       delete_table(not_found_ok=True) ก่อน load (ทาง ข)
 
 พิมพ์ผลเป็นบรรทัด `RESULT key=value` (workflow เก็บไปไว้ใน Job summary) ไม่พิมพ์ token/credentials
-exit code 1 ถ้า auth/load ล้ม ส่วน extend_expiry/delete_table ที่ sandbox ปฏิเสธเป็น "ผล" ของ spike
-จึงพิมพ์ error class + message แล้ว exit 0
+exit code 1 ถ้า auth/load ล้ม หรือเกิด error ที่ไม่ใช่การปฏิเสธของ sandbox
+extend_expiry/delete_table ที่ถูกปฏิเสธด้วย Forbidden/BadRequest/PermissionDenied เป็น "ผล" ของ spike
+พิมพ์ `REFUSED <class>: <message>` แล้ว exit 0 ส่วน exception อื่นพิมพ์ `ERROR ...` และ exit 1
 """
 
 import io
@@ -19,14 +20,14 @@ from datetime import datetime, timedelta, timezone
 import google.auth
 import pyarrow as pa
 import pyarrow.parquet as pq
-from google.api_core.exceptions import NotFound
+from google.api_core.exceptions import BadRequest, Forbidden, NotFound, PermissionDenied
 from google.cloud import bigquery
 
 DATASET = "vulnintel_spike"
 TABLE = "t1"
 LOCATION = "US"
 MODES = ("load", "extend_expiry", "recreate")
-EXTEND_DAYS = 59
+EXTEND_DAYS_NO_EXPIRY = 61  # ใช้เมื่อตารางไม่มี expires: ตั้ง now+61 วัน (เกิน 60 วันของ sandbox)
 
 # ทุก call ไป BigQuery ต้องมี timeout (วินาที)
 API_TIMEOUT_S = 30
@@ -67,6 +68,11 @@ def report_table(prefix: str, table: bigquery.Table) -> None:
     result(f"{prefix}.expires", table.expires.isoformat() if table.expires else None)
     result(f"{prefix}.expires_minus_now_days", days_left(table.expires, now))
     result(f"{prefix}.num_rows", table.num_rows)
+
+
+def classify(exc: Exception) -> str:
+    """REFUSED = sandbox ปฏิเสธ (เป็นผลของ spike), ERROR = ล้มด้วยเหตุอื่น (ต้อง exit non-zero)."""
+    return "REFUSED" if isinstance(exc, (Forbidden, BadRequest, PermissionDenied)) else "ERROR"
 
 
 def get_table_or_none(client: bigquery.Client, table_id: str) -> bigquery.Table | None:
@@ -114,12 +120,16 @@ def main() -> int:
         result("before.exists", True)
         report_table("before", before)
 
+    had_error = False
+
     if mode == "recreate":
         try:
             client.delete_table(table_id, not_found_ok=True, timeout=API_TIMEOUT_S)
             result("delete_table", "OK")
-        except Exception as exc:  # sandbox ปฏิเสธ = ผลของ spike
-            result("delete_table", f"REFUSED {type(exc).__name__}: {exc}")
+        except Exception as exc:
+            label = classify(exc)
+            had_error = had_error or label == "ERROR"
+            result("delete_table", f"{label} {type(exc).__name__}: {exc}")
 
     data = build_parquet()
     result("parquet_bytes", len(data))
@@ -133,21 +143,46 @@ def main() -> int:
 
     after = client.get_table(table_id, timeout=API_TIMEOUT_S)
     report_table("after", after)
-    if before is not None and before.expires is not None and after.expires is not None:
-        result("expires_changed_by_load", after.expires != before.expires)
-        result("expires_delta_seconds", f"{(after.expires - before.expires).total_seconds():.0f}")
+
+    # เทียบ expires ก่อน/หลัง load (พิมพ์เสมอ รวมกรณี None); recreate ใช้ชื่อ key ต่างกัน
+    key = "expires_changed_by_recreate" if mode == "recreate" else "expires_changed_by_load"
+    if before is None:
+        result(key, "n/a (no table before)")
+        result("expires_delta_seconds", "n/a")
+    else:
+        result(key, after.expires != before.expires)
+        if before.expires is not None and after.expires is not None:
+            result("expires_delta_seconds", f"{(after.expires - before.expires).total_seconds():.0f}")
+        else:
+            result("expires_delta_seconds", f"n/a (before={before.expires} after={after.expires})")
 
     if mode == "extend_expiry":
-        target = datetime.now(timezone.utc) + timedelta(days=EXTEND_DAYS)
+        # ต้องเป็นการเลื่อนจริง: ตั้งเป็น expires ปัจจุบัน + 1 วัน (now+59d จะเป็นการย่อ เพราะ expires อยู่ราว created+60d)
+        original = after.expires
+        if original is not None:
+            target = original + timedelta(days=1)
+        else:
+            target = datetime.now(timezone.utc) + timedelta(days=EXTEND_DAYS_NO_EXPIRY)
+        # BigQuery เก็บ expirationTime เป็น millisecond: ตัด microsecond ก่อนเทียบว่าถูก cap ไหม
+        target = target.replace(microsecond=(target.microsecond // 1000) * 1000)
+        result("extend_original", original.isoformat() if original else None)
+        result("extend_target", target.isoformat())
         after.expires = target
         try:
             updated = client.update_table(after, ["expires"], timeout=API_TIMEOUT_S)
             result("extend_expiry", "OK")
             report_table("extended", updated)
-        except Exception as exc:  # sandbox ปฏิเสธ/จำกัดที่ 60 วัน = ผลของ spike
-            result("extend_expiry", f"REFUSED {type(exc).__name__}: {exc}")
+            result("extend_capped", updated.expires != target)
+            if original is not None and updated.expires is not None:
+                result("extend_delta_seconds", f"{(updated.expires - original).total_seconds():.0f}")
+            else:
+                result("extend_delta_seconds", "n/a")
+        except Exception as exc:  # REFUSED/capped = ผลของ spike; ERROR = ล้มด้วยเหตุอื่น
+            label = classify(exc)
+            had_error = had_error or label == "ERROR"
+            result("extend_expiry", f"{label} {type(exc).__name__}: {exc}")
 
-    return 0
+    return 1 if had_error else 0
 
 
 if __name__ == "__main__":

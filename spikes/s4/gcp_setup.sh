@@ -71,18 +71,22 @@ fi
 command -v jq > /dev/null || die "jq not found (needed to edit the dataset ACL)"
 [[ "$REPO_ID" =~ ^[0-9]+$ ]] || die "REPO_ID must be numeric. usage: bash $0 <REPO_ID>  (gh api repos/Sorasila/Vulnintel_End_to_End_Pipeline --jq .id)"
 
-PROJECT_NUMBER="$(gc projects describe "$PROJECT_ID" --format='value(projectNumber)')"
-[[ "$PROJECT_NUMBER" =~ ^[0-9]+$ ]] || die "could not read project number for ${PROJECT_ID}"
-log "project=${PROJECT_ID} number=${PROJECT_NUMBER} repo_id=${REPO_ID}"
-
 # 1. enable APIs: ถ้า sandbox (ไม่มี billing) ปฏิเสธ API ไหน ให้หยุดทันที ซึ่งเป็นผลของ spike เอง
 log "enable APIs"
 if ! enable_out="$(gc services enable \
-  bigquery.googleapis.com iamcredentials.googleapis.com sts.googleapis.com \
-  iam.googleapis.com cloudresourcemanager.googleapis.com 2>&1)"; then
+  cloudresourcemanager.googleapis.com iam.googleapis.com \
+  bigquery.googleapis.com iamcredentials.googleapis.com sts.googleapis.com 2>&1)"; then
   echo "$enable_out" >&2
   die "enabling APIs failed (billing/sandbox restriction?). record the message above as a spike result"
 fi
+
+# project number ต้องใช้ cloudresourcemanager ซึ่งเพิ่ง enable ด้านบน จึงอ่านหลัง step 1
+if ! PROJECT_NUMBER="$(gc projects describe "$PROJECT_ID" --format='value(projectNumber)' 2>&1)" ||
+  [[ ! "$PROJECT_NUMBER" =~ ^[0-9]+$ ]]; then
+  echo "$PROJECT_NUMBER" >&2
+  die "could not read project number for ${PROJECT_ID} (check project id / permissions / cloudresourcemanager API)"
+fi
+log "project=${PROJECT_ID} number=${PROJECT_NUMBER} repo_id=${REPO_ID}"
 
 # 2. dataset (US multi-region)
 log "dataset ${DATASET}"
