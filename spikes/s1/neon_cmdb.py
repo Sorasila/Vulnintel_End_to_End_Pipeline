@@ -106,6 +106,12 @@ def do_seed(cur) -> None:
 def do_mutate(cur) -> None:
     if count(cur, "assets") == 0:
         raise RuntimeError("assets is empty: run case=seed first")
+    # mutate ครั้งเดียวต่อ seed: ถ้า re-dispatch หลังฝั่ง Databricks fail จะได้ไม่ insert แถวใหม่ซ้ำ
+    # และไม่ขยับ updated_at อีกรอบ snapshot ถัดไปยังคงเทียบกับ expected counts ได้
+    cur.execute("SELECT count(*) FROM public.assets WHERE environment = 'dr'")
+    if cur.fetchone()[0] > 0:
+        print("mutate already applied (environment='dr' rows exist): skipped; run case=reset then seed to start over")
+        return
     for asset_pk in UPDATE_IDS:
         cur.execute(
             "UPDATE public.assets SET environment = 'dr', updated_at = now() WHERE id = %s RETURNING id, asset_id",

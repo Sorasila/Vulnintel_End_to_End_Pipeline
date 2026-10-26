@@ -89,8 +89,11 @@ def rm_recursive(spark: SparkSession, path: str) -> str:
 def lookup_attempt(task_run_id: str) -> str:
     try:
         from databricks.sdk import WorkspaceClient
+        from databricks.sdk.core import Config
 
-        run = WorkspaceClient().jobs.get_run(run_id=int(task_run_id))
+        # timeouts ต้องตั้งในโค้ด (ไม่มี env binding) ไม่งั้นค้างได้ถึง 60s/300s ก่อน fallback เป็น unknown
+        w = WorkspaceClient(config=Config(http_timeout_seconds=10, retry_timeout_seconds=20))
+        run = w.jobs.get_run(run_id=int(task_run_id))
         return str(run.attempt_number)
     except Exception as exc:
         return f"unknown ({type(exc).__name__}: {short(exc, 120)})"

@@ -28,6 +28,7 @@ resources:
     spike_s1_snapshot:
       name: spike_s1_snapshot
       max_concurrent_runs: 1
+      timeout_seconds: 900  # ถ้า workflow timeout ฆ่า CLI ไป run บน Databricks ต้องไม่ค้างยึด pipeline slot
       parameters:
         - name: case
           default: mutate
@@ -63,6 +64,7 @@ resources:
     spike_s1_snapshot_full:
       name: spike_s1_snapshot_full
       max_concurrent_runs: 1
+      timeout_seconds: 900  # ถ้า workflow timeout ฆ่า CLI ไป run บน Databricks ต้องไม่ค้างยึด pipeline slot
       parameters:
         - name: case
           default: seed
@@ -98,6 +100,7 @@ resources:
     spike_s1_reset:
       name: spike_s1_reset
       max_concurrent_runs: 1
+      timeout_seconds: 900  # ถ้า workflow timeout ฆ่า CLI ไป run บน Databricks ต้องไม่ค้างยึด pipeline slot
       parameters:
         - name: case
           default: reset
