@@ -210,6 +210,7 @@ class TaskTrack:
     attempts: set = field(default_factory=set)
     attempt_runs: dict = field(default_factory=dict)  # attempt -> task run_id (ไว้ดึง error ของทุก attempt)
     attempt_results: dict = field(default_factory=dict)  # attempt -> result_state ล่าสุดที่เห็น
+    last_state: dict = field(default_factory=dict)  # attempt -> state ล่าสุดที่บันทึก (get_run คืนทุก attempt จึงต้องแยกต่อ attempt)
     run_id: int | None = None
     start_ms: int | None = None
     end_ms: int | None = None
@@ -252,8 +253,10 @@ def poll_run(w: WorkspaceClient, rt: RunTrack, now: float) -> None:
         st = task.state
         lc_t = state_name(st.life_cycle_state) if st else None
         rs_t = state_name(st.result_state) if st and st.result_state else None
-        if lc_t:
-            add_state(tt.timeline, now, f"attempt{attempt}:{lc_t}" + (f"/{rs_t}" if rs_t else ""))
+        state_t = f"{lc_t}/{rs_t}" if lc_t and rs_t else lc_t
+        if state_t and tt.last_state.get(attempt) != state_t:
+            tt.last_state[attempt] = state_t
+            tt.timeline.append((round(now, 1), f"attempt{attempt}:{state_t}"))
         tt.attempts.add(attempt)
         if task.run_id:
             tt.attempt_runs[attempt] = task.run_id
@@ -261,7 +264,8 @@ def poll_run(w: WorkspaceClient, rt: RunTrack, now: float) -> None:
             tt.attempt_results[attempt] = rs_t
         if st and st.state_message:
             tt.messages[attempt] = trunc(st.state_message)
-        tt.run_id, tt.start_ms, tt.end_ms, tt.result_state = task.run_id, task.start_time, task.end_time, rs_t
+        if attempt >= max(tt.attempts):  # สรุปของ task ใช้ attempt ล่าสุดเท่านั้น
+            tt.run_id, tt.start_ms, tt.end_ms, tt.result_state = task.run_id, task.start_time, task.end_time, rs_t
     if lc in TERMINAL_RUN:
         rt.done, rt.end_t = True, round(now, 1)
         rt.result_state = state_name(run.state.result_state) if run.state.result_state else None
