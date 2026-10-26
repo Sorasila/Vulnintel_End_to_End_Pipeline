@@ -23,3 +23,4 @@ CREATE VOLUME IF NOT EXISTS vulnintel_dev.ops._checkpoints;
 -- GRANT SELECT         ON CATALOG vulnintel_dev TO `<sp-application-id>`;
 -- GRANT MODIFY         ON CATALOG vulnintel_dev TO `<sp-application-id>`;
 -- GRANT CREATE TABLE   ON CATALOG vulnintel_dev TO `<sp-application-id>`;
+-- GRANT CREATE MATERIALIZED VIEW ON CATALOG vulnintel_dev TO `<sp-application-id>`;  -- เพิ่มหลัง S3 รอบ 1: SDP pipeline ที่สร้าง MV ต้องใช้สิทธิ์นี้
