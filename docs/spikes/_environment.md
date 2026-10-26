@@ -10,7 +10,7 @@
 ## Neon (Postgres)
 
 - Region: AWS US East 2 (Ohio), project `vulnintel-cmdb`
-- Postgres version: <!-- -->
+- Postgres version: 18.6 (`SELECT version()` จาก spike S1, 2026-10-26)
 
 ## GCP
 
