@@ -1,0 +1,84 @@
+name: spike-s4b
+
+# Spike S4b: GitHub Actions ยืนยันตัวตนกับ GCP ผ่าน Workload Identity Federation (OIDC, ไม่มี key)
+# แล้ว load Parquet เข้า BigQuery sandbox (vulnintel_spike.t1) เพื่อดูว่า WRITE_TRUNCATE reset expires ไหม
+# ต้องรันจาก main เท่านั้น (attribute condition ของ provider ยอมเฉพาะ refs/heads/main)
+# ลำดับ: load -> รอ >= 1 ชั่วโมง -> load อีกครั้งแล้วเทียบ expires -> (ถ้าไม่เปลี่ยน) extend_expiry -> recreate
+# กด "Run workflow" เสมอ ผลสรุปอยู่ใน Job summary
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "load = WRITE_TRUNCATE อย่างเดียว, extend_expiry = load แล้วเลื่อน expires เป็น +59 วัน, recreate = ลบตารางก่อน load"
+        type: choice
+        options: [load, extend_expiry, recreate]
+        default: load
+
+# id-token: write ให้ job ขอ OIDC token จาก GitHub ได้ (ใช้แลกกับ GCP ผ่าน google-github-actions/auth)
+permissions:
+  id-token: write
+  contents: read
+
+# งาน GCP spike ไม่แตะ Databricks จึงใช้ group แยก ไม่ชนกับ databricks-pipelines
+concurrency:
+  group: gcp-spike
+  cancel-in-progress: false
+
+env:
+  MODE: ${{ inputs.mode }}
+  GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+
+jobs:
+  s4b:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # shell: bash = bash -eo pipefail: ถ้า step ที่ pipe ไป tee ล้ม step ต้องล้มตาม
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install "google-cloud-bigquery~=3.46.0" "pyarrow~=26.0.0"
+
+      - name: Authenticate to Google Cloud (WIF)
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_SA_EMAIL }}
+
+      - name: BigQuery load check
+        run: |
+          echo "run_id=$GITHUB_RUN_ID attempt=$GITHUB_RUN_ATTEMPT mode=$MODE"
+          python spikes/s4/bq_load_check.py 2>&1 | tee "$RUNNER_TEMP/bq_load.log"
+
+      # always(): ผู้ตรวจอ่าน Actions log ไม่ได้ จึงสรุปทุกอย่างลง Job summary แม้ auth/load ล้ม
+      - name: Summarize results
+        if: always()
+        env:
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          log="$RUNNER_TEMP/bq_load.log"
+          {
+            echo "### spike-s4b"
+            echo "- run_id: \`$GITHUB_RUN_ID\` attempt: \`$GITHUB_RUN_ATTEMPT\` mode: \`$MODE\` job.status: \`$JOB_STATUS\`"
+            echo "- time (UTC): \`$(date -u +%Y-%m-%dT%H:%M:%SZ)\`"
+            if [ -f "$log" ]; then
+              echo '#### RESULT lines'
+              echo '```'
+              grep '^RESULT ' "$log" || echo "(no RESULT lines)"
+              echo '```'
+              echo '#### output (last 40 lines)'
+              echo '```'
+              tail -n 40 "$log"
+              echo '```'
+            else
+              echo "step did not run (no log): auth or an earlier step failed"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
