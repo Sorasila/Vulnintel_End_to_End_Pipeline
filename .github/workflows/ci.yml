@@ -4,7 +4,7 @@ name: ci
 # job test: ruff check + ruff format --check + pytest tests/unit บน PySpark local (ต้องใช้ Java 17) ไม่ต้องใช้ secret
 #   pyspark 4.2.0 มีแต่ sdist บน PyPI: install ครั้งแรกต้อง build (~10-15 นาที) จึง cache pip ด้วย key จาก pyproject.toml
 # job bundle-validate: databricks bundle validate ทั้ง dev และ prod แล้วตรวจว่า schema ของ dev ชื่อ bronze/gold/ops/silver เป๊ะ
-#   (ไม่มี prefix) เพราะ presets.name_prefix: '' ใน dev ยังไม่มีเอกสารยืนยัน มีแค่ความเห็นใน CLI issue ผลลัพธ์เขียนลง Job summary ด้วย
+#   (ไม่มี prefix) เพราะ experimental.skip_name_prefix_for_schema: true ใน databricks.yml ถ้า flag นี้ไม่ทำงานจะล้ม ผลลัพธ์เขียนลง Job summary ด้วย
 # ชื่อ job "test" และ "bundle-validate" ถูกใช้เป็น required status check ของ branch protection บน main ห้ามเปลี่ยนชื่อ
 # secrets (เฉพาะ bundle-validate): DATABRICKS_HOST, DATABRICKS_CLIENT_ID, DATABRICKS_CLIENT_SECRET (OAuth M2M ของ service principal)
 #   PR จาก fork ไม่ได้รับ secret job bundle-validate จะล้มซึ่งถูกต้อง (ไม่ปล่อย secret ให้โค้ดภายนอก)
@@ -102,7 +102,7 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
           if [ "$actual" != "$expected" ]; then
-            echo "::error title=dev schema names are prefixed::expected [$expected] but got [$actual]. presets.name_prefix: '' in databricks.yml (target dev) did not remove the dev_<user>_ prefix from UC schema names."
+            echo "::error title=dev schema names are prefixed::expected [$expected] but got [$actual]. experimental.skip_name_prefix_for_schema: true in databricks.yml did not remove the dev_<user>_ prefix from UC schema names."
             exit 1
           fi
 

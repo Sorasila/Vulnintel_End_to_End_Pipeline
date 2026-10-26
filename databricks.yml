@@ -10,6 +10,14 @@ bundle:
 include:
   - resources/*.yml
 
+# mode: development เติม prefix (dev_<user>_) หน้าชื่อ UC schema ด้วย และ presets.name_prefix: '' เอา prefix ออกไม่ได้
+# (ยืนยันจาก CI bundle-validate ใน PR #9 และจาก CLI: schema ถูก prefix เว้นแต่ตั้ง flag นี้ ส่วน volume ไม่เคยถูก prefix)
+# schema ต้องชื่อ bronze/silver/gold/ops เป๊ะในทั้งสอง catalog จึงเปิด flag นี้ (กระทบเฉพาะ dev เพราะ mode production ไม่ใส่ prefix อยู่แล้ว)
+# job/pipeline ใน dev ยังมี prefix "[dev ...]" ตามปกติ
+# job bundle-validate ใน CI ตรวจชื่อ schema ของ dev ทุกครั้ง
+experimental:
+  skip_name_prefix_for_schema: true
+
 variables:
   catalog:
     description: Unity Catalog ที่ resource ทั้งหมดอยู่ใน (ตั้งค่าต่อ target)
@@ -24,13 +32,6 @@ targets:
       catalog: vulnintel_dev
     run_as:
       service_principal_name: ${var.service_principal_id}
-    presets:
-      # mode: development ปกติเติม prefix (dev_<user>_) หน้าชื่อ resource รวมถึง UC schema
-      # (docs: presets override the default mode behavior)
-      # ต้องการให้ schema ชื่อ bronze/silver/gold/ops ตรงกับ catalog vulnintel_dev ที่ใช้จริง จึงตั้ง prefix เป็นค่าว่าง
-      # ผลข้างเคียง: job/pipeline ใน dev จะไม่มี prefix ด้วย (ใช้ dev workspace/catalog คนเดียว จึงไม่ชน)
-      # volume ไม่ถูกใส่ prefix อยู่แล้ว (CLI issue #1779)
-      name_prefix: ''
 
   prod:
     mode: production
