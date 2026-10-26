@@ -1,0 +1,98 @@
+name: spike-s3
+
+# Spike S3: ข้อจำกัด 1 active pipeline ต่อประเภท deploy bundle (spikes/s3/databricks.yml: pipeline spike_s3_a/spike_s3_b
+# และ job spike_s3_seq) แล้วรัน spikes/s3/probe.py ซึ่งสั่ง update ด้วย SDK และพิมพ์ผลเป็นบรรทัด "RESULT ..."
+# step สุดท้ายสรุปลง Job summary (ดู docs/spikes/S3.md) กด "Run workflow" เสมอ (ไม่ใช้ "Re-run jobs")
+# case: all = parallel -> seq -> seq_during ตามลำดับ, destroy = ลบ resource ทั้งหมดของ bundle (cleanup ตอนจบ Gate G0)
+
+on:
+  workflow_dispatch:
+    inputs:
+      case:
+        description: "all = รันทุก step, parallel = สั่ง A กับ B พร้อมกัน, seq = job A->B, seq_during = job ระหว่าง A รันอยู่, destroy = ลบ bundle"
+        type: choice
+        options: [all, parallel, seq, seq_during, destroy]
+        default: all
+
+permissions:
+  contents: read
+
+# งาน Databricks ทุก workflow ใช้ group เดียวกัน ไม่ให้รันชนกัน
+concurrency:
+  group: databricks-pipelines
+  cancel-in-progress: false
+
+env:
+  DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
+  DATABRICKS_AUTH_TYPE: oauth-m2m
+  DATABRICKS_CLIENT_ID: ${{ secrets.DATABRICKS_CLIENT_ID }}
+  DATABRICKS_CLIENT_SECRET: ${{ secrets.DATABRICKS_CLIENT_SECRET }}
+  CASE: ${{ inputs.case }}
+
+jobs:
+  s3:
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    # shell: bash = bash -eo pipefail: ถ้า step ที่ pipe ไป tee ล้ม step ต้องล้มตาม
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Python dependencies
+        run: pip install "databricks-sdk>=0.40"
+
+      - uses: databricks/setup-cli@v1.22.1
+
+      - name: Deploy bundle
+        if: inputs.case != 'destroy'
+        working-directory: spikes/s3
+        run: databricks bundle deploy -t dev 2>&1 | tee "$RUNNER_TEMP/deploy.log"
+
+      # timeout ของ step < timeout ของ job เพื่อให้ step Summarize (always) ยังได้รันถ้า probe ค้าง
+      # probe มี deadline ของตัวเองและ cancel run/stop pipeline ที่ค้างตอนจบ (หรือเมื่อได้รับ SIGTERM)
+      - name: Run probe
+        if: inputs.case != 'destroy'
+        timeout-minutes: 40
+        run: python spikes/s3/probe.py --case "$CASE" 2>&1 | tee "$RUNNER_TEMP/probe.log"
+
+      - name: Destroy bundle
+        if: inputs.case == 'destroy'
+        working-directory: spikes/s3
+        run: databricks bundle destroy -t dev --auto-approve 2>&1 | tee "$RUNNER_TEMP/destroy.log"
+
+      # always(): ให้เห็นผลที่ probe พิมพ์ไว้ แม้ step ก่อนหน้าล้ม log ถูก tee ไว้ที่ $RUNNER_TEMP
+      - name: Summarize results
+        if: always()
+        run: |
+          {
+            echo "### spike-s3: case=\`$CASE\`"
+            echo
+            if [ -f "$RUNNER_TEMP/probe.log" ]; then
+              echo "#### probe RESULT lines"
+              echo '```'
+              grep '^RESULT' "$RUNNER_TEMP/probe.log" || echo "(no RESULT lines; last 15 lines of probe output follow)"
+              echo '```'
+              if ! grep -q '^RESULT' "$RUNNER_TEMP/probe.log"; then
+                echo '```'
+                tail -n 15 "$RUNNER_TEMP/probe.log"
+                echo '```'
+              fi
+            else
+              echo "#### probe: step did not run (no log)"
+            fi
+            for name in deploy destroy; do
+              log="$RUNNER_TEMP/$name.log"
+              if [ -f "$log" ]; then
+                echo "#### $name output (last 40 lines)"
+                echo '```'
+                tail -n 40 "$log"
+                echo '```'
+              fi
+            done
+          } >> "$GITHUB_STEP_SUMMARY"

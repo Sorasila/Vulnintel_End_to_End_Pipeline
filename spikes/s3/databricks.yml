@@ -1,0 +1,56 @@
+# Spike S3: ข้อจำกัด 1 active pipeline ต่อประเภท: pipeline serverless 2 ตัว + job ที่รันต่อกัน
+# host ไม่ได้ระบุที่นี่: CLI อ่านจาก env DATABRICKS_HOST (และ auth จาก DATABRICKS_AUTH_TYPE/CLIENT_ID/CLIENT_SECRET)
+# probe (spikes/s3/probe.py) หา pipeline/job จาก "name" ดังนั้น name ต้องตรงกับค่าคงที่ใน probe.py
+#
+#   spike_s3_a, spike_s3_b   pipeline ละ 1 materialized view (spark.range(1000))
+#   spike_s3_seq             job: run_a (spike_s3_a) -> run_b (spike_s3_b) task pipeline ตั้ง retry 1 ครั้ง ห่าง 60 วินาที
+# resource key ต้องไม่ซ้ำข้ามประเภท (บทเรียนจาก S1)
+bundle:
+  name: vulnintel-spike-s3
+
+targets:
+  dev:
+    default: true
+
+resources:
+  pipelines:
+    spike_s3_a:
+      name: spike_s3_a
+      catalog: vulnintel_dev
+      schema: ops
+      serverless: true
+      continuous: false
+      development: true
+      libraries:
+        - file:
+            path: ./pipeline_a.py
+
+    spike_s3_b:
+      name: spike_s3_b
+      catalog: vulnintel_dev
+      schema: ops
+      serverless: true
+      continuous: false
+      development: true
+      libraries:
+        - file:
+            path: ./pipeline_b.py
+
+  jobs:
+    spike_s3_seq:
+      name: spike_s3_seq
+      max_concurrent_runs: 1
+      timeout_seconds: 900  # ถ้า workflow timeout ฆ่า probe ไป run บน Databricks ต้องไม่ค้างยึด pipeline slot
+      tasks:
+        - task_key: run_a
+          pipeline_task:
+            pipeline_id: ${resources.pipelines.spike_s3_a.id}
+          max_retries: 1
+          min_retry_interval_millis: 60000
+        - task_key: run_b
+          depends_on:
+            - task_key: run_a
+          pipeline_task:
+            pipeline_id: ${resources.pipelines.spike_s3_b.id}
+          max_retries: 1
+          min_retry_interval_millis: 60000
