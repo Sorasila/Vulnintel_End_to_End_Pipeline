@@ -41,14 +41,27 @@ ERR_TRUNC = 300
 
 TERMINAL_UPDATE = {"COMPLETED", "FAILED", "CANCELED"}
 TERMINAL_RUN = {"TERMINATED", "SKIPPED", "INTERNAL_ERROR"}
+# state ที่นับว่า update "กำลังทำงาน" (ไม่ใช่รอคิว/รอ resource และยังไม่จบ) ใช้ตัดสินว่ารันซ้อนกันไหม
+ACTIVE_UPDATE = {"INITIALIZING", "SETTING_UP_TABLES", "RUNNING", "RESETTING"}
 PIPELINE_BUSY = {"RUNNING", "STARTING", "RECOVERING", "RESETTING", "DEPLOYING"}
 
 
 # ---------- pure functions (timeline + classification) ----------
 
 
+def scrub(text) -> str:
+    """ตัดค่า host (มี/ไม่มี scheme) และ credential ออกจากข้อความ error ก่อนพิมพ์."""
+    out = str(text)
+    host = os.environ.get("DATABRICKS_HOST", "").strip()
+    secrets = [host, host.rstrip("/"), host.removeprefix("https://").removeprefix("http://").rstrip("/")]
+    secrets += [os.environ.get("DATABRICKS_CLIENT_ID", ""), os.environ.get("DATABRICKS_CLIENT_SECRET", "")]
+    for value in sorted({v for v in secrets if len(v) >= 4}, key=len, reverse=True):
+        out = out.replace(value, "<redacted>")
+    return out
+
+
 def trunc(text, n: int = ERR_TRUNC) -> str:
-    s = " ".join(str(text).split())
+    s = " ".join(scrub(text).split())
     return s if len(s) <= n else s[: n - 3] + "..."
 
 
@@ -68,11 +81,12 @@ def fmt_timeline(timeline: list) -> str:
     return " -> ".join(f"{t:g}s:{s}" for t, s in timeline) if timeline else "(none)"
 
 
-def windows(timeline: list, state: str, end_t: float) -> list:
-    """ช่วงเวลา [start, end) ที่อยู่ใน state นี้ ช่วงสุดท้ายปิดที่ end_t."""
+def windows(timeline: list, states, end_t: float) -> list:
+    """ช่วงเวลา [start, end) ที่อยู่ใน state นี้ (str หรือ set ของ state) ช่วงสุดท้ายปิดที่ end_t."""
+    wanted = {states} if isinstance(states, str) else set(states)
     out = []
     for i, (t, s) in enumerate(timeline):
-        if s == state:
+        if s in wanted:
             end = timeline[i + 1][0] if i + 1 < len(timeline) else end_t
             out.append((t, max(end, t)))
     return out
@@ -104,29 +118,32 @@ class UpdateTrack:
 def classify(a: UpdateTrack, b: UpdateTrack) -> tuple[str, str]:
     """ตัดสินว่า update 2 ตัวที่สั่งพร้อมกัน: reject / รันซ้อน / รันต่อกัน / ไม่ได้รัน.
 
-    เทียบเฉพาะช่วงที่ state = RUNNING (ซ้อนกันต้อง > 0 วินาที จากการ poll ทุก POLL_S วินาที
-    ถ้า A จบแล้ว B เพิ่งเห็น RUNNING ในรอบ poll เดียวกันถือว่าต่อกัน)
+    เทียบเฉพาะช่วงที่ state อยู่ใน ACTIVE_UPDATE (RUNNING, INITIALIZING, SETTING_UP_TABLES, RESETTING)
+    ทุก track ใช้ timestamp เดียวกันต่อรอบ poll (ดู observe) ซ้อนกันต้องนานอย่างน้อย POLL_S วินาทีจึงเป็น CONCURRENT
+    ซ้อนกันสั้นกว่านั้น (0 < ov < POLL_S) คือเห็นแค่ว่าติดกันในรอบ poll เดียว ตัดสินไม่ได้ จึงรายงาน SERIAL_OR_ADJACENT
     """
     rejected = [t.label for t in (a, b) if t.start_error]
     if len(rejected) == 2:
         return "BOTH_REJECTED_AT_START", "start_update raised for A and B"
     if rejected:
         return f"{rejected[0]}_REJECTED_AT_START", "start_update raised for " + rejected[0]
-    wa = windows(a.timeline, "RUNNING", a.end_t)
-    wb = windows(b.timeline, "RUNNING", b.end_t)
+    wa = windows(a.timeline, ACTIVE_UPDATE, a.end_t)
+    wb = windows(b.timeline, ACTIVE_UPDATE, b.end_t)
     if not wa or not wb:
         never = [t.label for t, w in ((a, wa), (b, wb)) if not w]
         finals = {t.label: (t.timeline[-1][1] if t.timeline else "NONE") for t in (a, b)}
-        return "NEVER_RAN_" + "_".join(never), f"never RUNNING: {never}; last states={finals}"
+        return "NEVER_RAN_" + "_".join(never), f"never active (RUNNING/INITIALIZING/SETTING_UP_TABLES): {never}; last states={finals}"
     ov = overlap_seconds(wa, wb)
-    if ov > 0:
-        return "CONCURRENT", f"overlap_running_s={ov:g}"
+    if ov >= POLL_S:
+        return "CONCURRENT", f"overlap_active_s={ov:g}"
     first, second = (a, b) if wa[0][0] <= wb[0][0] else (b, a)
-    second_running = (wb if second is b else wa)[0][0]
+    second_active = (wb if second is b else wa)[0][0]
     first_end = terminal_time(first.timeline, first.end_t)
+    verdict = "SERIAL" if ov <= 0 else "SERIAL_OR_ADJACENT"
     return (
-        "SERIAL",
-        f"first={first.label} ended_at={first_end:g}s second={second.label} first_running_at={second_running:g}s",
+        verdict,
+        f"first={first.label} ended_at={first_end:g}s overlap_active_s={ov:g} "
+        f"{second.label}_first_active_at={second_active:g}s",
     )
 
 
@@ -191,6 +208,8 @@ class TaskTrack:
     timeline: list = field(default_factory=list)  # "attempt0:RUNNING" ... เก็บตอนเปลี่ยน
     messages: dict = field(default_factory=dict)  # attempt -> state_message
     attempts: set = field(default_factory=set)
+    attempt_runs: dict = field(default_factory=dict)  # attempt -> task run_id (ไว้ดึง error ของทุก attempt)
+    attempt_results: dict = field(default_factory=dict)  # attempt -> result_state ล่าสุดที่เห็น
     run_id: int | None = None
     start_ms: int | None = None
     end_ms: int | None = None
@@ -210,15 +229,20 @@ class RunTrack:
     done: bool = False
 
 
-def run_job(w: WorkspaceClient, job_id: int, t0: float) -> RunTrack:
+def run_job(w: WorkspaceClient, job_id: int, t0: float, runs: list) -> RunTrack:
+    """สั่ง job แล้วใส่ run ลง runs ทันที (ก่อนเรียก API อื่น) เพื่อให้ cleanup cancel ได้เสมอ."""
     t_called = round(time.monotonic() - t0, 1)
     run = w.jobs.run_now(job_id).response  # ไม่ใช้ .result(): ต้องควบคุม deadline เอง
-    path = urlparse(w.jobs.get_run(run.run_id).run_page_url or "").path or "(no url)"  # path เท่านั้น ไม่พิมพ์ host
-    return RunTrack(run_id=run.run_id, page_path=path, t_called=t_called)
+    rt = RunTrack(run_id=run.run_id, page_path="(unknown)", t_called=t_called)
+    runs.append(rt)
+    try:
+        rt.page_path = urlparse(w.jobs.get_run(run.run_id).run_page_url or "").path or "(no url)"  # path เท่านั้น ไม่พิมพ์ host
+    except Exception as exc:
+        rt.page_path = f"(get_run failed: {type(exc).__name__})"
+    return rt
 
 
-def poll_run(w: WorkspaceClient, rt: RunTrack, t0: float) -> None:
-    now = time.monotonic() - t0
+def poll_run(w: WorkspaceClient, rt: RunTrack, now: float) -> None:
     run = w.jobs.get_run(rt.run_id)
     lc = state_name(run.state.life_cycle_state) if run.state else None
     add_state(rt.timeline, now, lc)
@@ -231,6 +255,10 @@ def poll_run(w: WorkspaceClient, rt: RunTrack, t0: float) -> None:
         if lc_t:
             add_state(tt.timeline, now, f"attempt{attempt}:{lc_t}" + (f"/{rs_t}" if rs_t else ""))
         tt.attempts.add(attempt)
+        if task.run_id:
+            tt.attempt_runs[attempt] = task.run_id
+        if rs_t:
+            tt.attempt_results[attempt] = rs_t
         if st and st.state_message:
             tt.messages[attempt] = trunc(st.state_message)
         tt.run_id, tt.start_ms, tt.end_ms, tt.result_state = task.run_id, task.start_time, task.end_time, rs_t
@@ -240,8 +268,7 @@ def poll_run(w: WorkspaceClient, rt: RunTrack, t0: float) -> None:
         rt.state_message = trunc(run.state.state_message or "")
 
 
-def poll_update(w: WorkspaceClient, tr: UpdateTrack, t0: float, errors: set) -> None:
-    now = time.monotonic() - t0
+def poll_update(w: WorkspaceClient, tr: UpdateTrack, now: float, errors: set) -> None:
     try:
         state = state_name(w.pipelines.get_update(tr.pipeline_id, tr.update_id).update.state)
     except Exception as exc:  # get_update อาจ 404 ชั่วครู่หลัง start: บันทึกข้อความไม่ซ้ำแล้วลองต่อ
@@ -260,11 +287,12 @@ def observe(w, t0, deadline_s, updates=(), run: RunTrack | None = None) -> bool:
     errors: set = set()
     end = time.monotonic() + deadline_s
     while True:
+        now = time.monotonic() - t0  # timestamp เดียวต่อรอบ: ทุก track ใช้ร่วมกัน ไม่ให้เหลื่อมกันภายในรอบ
         for tr in updates:
             if not tr.done:
-                poll_update(w, tr, t0, errors)
+                poll_update(w, tr, now, errors)
         if run is not None and not run.done:
-            poll_run(w, run, t0)
+            poll_run(w, run, now)
         pending = [tr for tr in updates if not tr.done] + ([run] if run is not None and not run.done else [])
         if not pending:
             return True
@@ -315,12 +343,17 @@ def report_run(w, tag: str, rt: RunTrack) -> None:
         result(f"[{tag}] task={key} timeline={fmt_timeline(tt.timeline)}")
         for attempt, msg in sorted(tt.messages.items()):
             result(f'[{tag}] task={key} attempt{attempt} state_message="{msg}"')
-        if tt.result_state not in (None, "SUCCESS") and tt.run_id:
+        # ทุก attempt ที่ไม่สำเร็จ (attempt ก่อนสุดท้ายล้มแน่นอน เพราะถูก retry) ดึง error แม้ retry จะช่วยให้ job ผ่าน
+        last = max(tt.attempts, default=0)
+        for attempt, run_id in sorted(tt.attempt_runs.items()):
+            outcome = tt.attempt_results.get(attempt)
+            if attempt == last and outcome in (None, "SUCCESS"):
+                continue
             try:
-                err = w.jobs.get_run_output(tt.run_id).error
+                err = w.jobs.get_run_output(run_id).error
             except Exception as exc:
                 err = f"(get_run_output failed: {type(exc).__name__}: {trunc(exc, 150)})"
-            result(f'[{tag}] task={key} output_error="{trunc(err or "")}"')
+            result(f'[{tag}] task={key} attempt{attempt} result={outcome} output_error="{trunc(err or "")}"')
 
 
 def report_updates_list(w, tag: str, label: str, pipeline_id: str, t_ref_ms: int) -> None:
@@ -390,8 +423,7 @@ def case_seq(ctx: Ctx) -> bool:
     w = ctx.w
     ensure_idle(w, ctx.pipelines, ctx.cap(IDLE_DEADLINE_S))
     t0 = time.monotonic()
-    rt = run_job(w, ctx.job_id, t0)
-    ctx.runs.append(rt)
+    rt = run_job(w, ctx.job_id, t0, ctx.runs)
     finished = observe(w, t0, ctx.cap(JOB_DEADLINE_S), run=rt)
     report_run(w, "step3", rt)
     ok = finished and rt.result_state == "SUCCESS" and all(t.result_state == "SUCCESS" for t in rt.tasks.values()) and len(rt.tasks) == 2
@@ -407,8 +439,7 @@ def case_seq_during(ctx: Ctx) -> bool:
     t_ref_ms = int(time.time() * 1000)
     a = UpdateTrack("A", ctx.pipelines["A"])
     start_update(w, a, t0)
-    rt = run_job(w, ctx.job_id, t0)
-    ctx.runs.append(rt)
+    rt = run_job(w, ctx.job_id, t0, ctx.runs)
     result(f"[step4] gap_between_start_update_and_run_now={rt.t_called - (a.t_called or 0):.1f}s")
     finished = observe(w, t0, ctx.cap(JOB_DEADLINE_S), updates=[a], run=rt)
     if finished is False and not a.done:
