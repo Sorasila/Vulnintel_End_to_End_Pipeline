@@ -1,0 +1,80 @@
+name: cd
+
+# CD ของ VulnIntel: deploy Databricks Asset Bundle
+# trigger 1 (workflow_run): เมื่อ workflow "ci" (ชื่อต้องตรงกับ name: ใน ci.yml) จบบน main -> deploy target prod
+#   deploy เฉพาะเมื่อ CI สำเร็จ และ CI นั้นเกิดจาก push เท่านั้น (ไม่ใช่ pull_request จาก fork ที่ตั้งชื่อ branch ว่า main)
+#   checkout commit ที่ CI ตรวจจริง (workflow_run.head_sha) ไม่ใช่ HEAD ล่าสุดของ main
+# trigger 2 (workflow_dispatch): กด "Run workflow" เลือก target dev|prod (default dev) ไว้ deploy dev ด้วยมือ
+#   (inputs.target ว่างเมื่อ trigger ด้วย workflow_run จึงใช้ prod เป็นค่าเริ่มต้นในกรณีนั้น)
+# secrets: DATABRICKS_HOST, DATABRICKS_CLIENT_ID, DATABRICKS_CLIENT_SECRET (OAuth M2M ของ service principal)
+#   ส่ง client id ให้ bundle variable service_principal_id ผ่าน BUNDLE_VAR_service_principal_id
+# concurrency: group databricks-pipelines เดียวกับทุก workflow ที่แตะ pipeline ของ Databricks (Gate G0: 1 update ต่อครั้ง)
+#   cancel-in-progress: false = deploy ที่รันอยู่ไม่ถูกยกเลิกกลางคัน (GitHub เก็บรอบที่รออยู่ไว้แค่ 1 รอบ รอบเก่าที่รออยู่จะถูกแทนที่)
+# deploy ไม่ใส่ --auto-approve: ถ้า deploy ต้องลบ/สร้าง resource ใหม่ (เช่น schema, pipeline) CLI จะล้มแทนการลบเงียบ ๆ
+
+on:
+  workflow_run:
+    workflows: [ci]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "target ที่จะ deploy (dev = default, prod = production)"
+        type: choice
+        options: [dev, prod]
+        default: dev
+
+permissions:
+  contents: read
+
+concurrency:
+  group: databricks-pipelines
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    env:
+      DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
+      DATABRICKS_AUTH_TYPE: oauth-m2m
+      DATABRICKS_CLIENT_ID: ${{ secrets.DATABRICKS_CLIENT_ID }}
+      DATABRICKS_CLIENT_SECRET: ${{ secrets.DATABRICKS_CLIENT_SECRET }}
+      BUNDLE_VAR_service_principal_id: ${{ secrets.DATABRICKS_CLIENT_ID }}
+      # workflow_dispatch -> ค่าที่เลือก (default dev มีค่าเสมอ), workflow_run -> prod
+      TARGET: ${{ github.event_name == 'workflow_dispatch' && inputs.target || 'prod' }}
+    steps:
+      # workflow_run: commit ที่ CI ผ่านแล้ว, workflow_dispatch: head_sha ว่าง จึงใช้ github.sha (ref ที่เลือก)
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+
+      - uses: databricks/setup-cli@v1.22.1
+
+      - name: Deploy bundle
+        run: databricks bundle deploy -t "$TARGET" 2>&1 | tee "$RUNNER_TEMP/deploy.log"
+
+      - name: Summarize deploy
+        if: always()
+        run: |
+          {
+            echo "### cd: bundle deploy -t \`$TARGET\`"
+            echo
+            echo "- event: \`${{ github.event_name }}\`"
+            echo "- commit: \`$(git rev-parse HEAD)\`"
+            echo
+            if [ -f "$RUNNER_TEMP/deploy.log" ]; then
+              echo '```'
+              tail -n 40 "$RUNNER_TEMP/deploy.log"
+              echo '```'
+            else
+              echo "(deploy step did not run)"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
