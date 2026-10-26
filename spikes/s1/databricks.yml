@@ -1,0 +1,115 @@
+# Spike S1 (แผนสำรอง snapshot): pipeline SCD2 + jobs ที่ ingest CSV จาก Volume แล้วรัน pipeline
+# host ไม่ได้ระบุที่นี่: CLI อ่านจาก env DATABRICKS_HOST (และ auth จาก DATABRICKS_AUTH_TYPE/CLIENT_ID/CLIENT_SECRET)
+#
+# jobs (workflow เลือกตาม case):
+#   spike_s1_snapshot       ingest -> pipeline (full_refresh: false) -> report   ใช้กับ case mutate
+#   spike_s1_snapshot_full  ingest -> pipeline (full_refresh: true)  -> report   ใช้กับ case seed
+#                           (seed ตามหลัง reset เสมอ จึงต้อง rebuild silver ใหม่ ไม่งั้นเวอร์ชันเก่าค้างอยู่)
+#   spike_s1_reset          reset ของ bronze/checkpoint/landing (ไม่มี pipeline และ report)
+bundle:
+  name: vulnintel-spike-s1
+
+targets:
+  dev:
+    default: true
+
+resources:
+  pipelines:
+    spike_s1_scd2:
+      name: spike_s1_snapshot
+      catalog: vulnintel_dev
+      schema: silver
+      serverless: true
+      libraries:
+        - file:
+            path: ./snapshot_fallback_pipeline.py
+
+  jobs:
+    spike_s1_snapshot:
+      name: spike_s1_snapshot
+      max_concurrent_runs: 1
+      parameters:
+        - name: case
+          default: mutate
+        - name: run_id
+          default: local
+      environments:
+        - environment_key: default
+          spec:
+            environment_version: "4"
+      tasks:
+        - task_key: ingest
+          environment_key: default
+          spark_python_task:
+            python_file: ./snapshot_ingest.py
+            parameters: ["--case", "{{job.parameters.case}}", "--run_id", "{{job.parameters.run_id}}", "--task_run_id", "{{task.run_id}}"]
+          max_retries: 1
+          min_retry_interval_millis: 5000
+        - task_key: pipeline
+          depends_on:
+            - task_key: ingest
+          pipeline_task:
+            pipeline_id: ${resources.pipelines.spike_s1_scd2.id}
+            full_refresh: false
+        - task_key: report
+          depends_on:
+            - task_key: pipeline
+          run_if: ALL_DONE
+          environment_key: default
+          spark_python_task:
+            python_file: ./report.py
+            parameters: ["--case", "{{job.parameters.case}}", "--run_id", "{{job.parameters.run_id}}"]
+
+    spike_s1_snapshot_full:
+      name: spike_s1_snapshot_full
+      max_concurrent_runs: 1
+      parameters:
+        - name: case
+          default: seed
+        - name: run_id
+          default: local
+      environments:
+        - environment_key: default
+          spec:
+            environment_version: "4"
+      tasks:
+        - task_key: ingest
+          environment_key: default
+          spark_python_task:
+            python_file: ./snapshot_ingest.py
+            parameters: ["--case", "{{job.parameters.case}}", "--run_id", "{{job.parameters.run_id}}", "--task_run_id", "{{task.run_id}}"]
+          max_retries: 1
+          min_retry_interval_millis: 5000
+        - task_key: pipeline
+          depends_on:
+            - task_key: ingest
+          pipeline_task:
+            pipeline_id: ${resources.pipelines.spike_s1_scd2.id}
+            full_refresh: true
+        - task_key: report
+          depends_on:
+            - task_key: pipeline
+          run_if: ALL_DONE
+          environment_key: default
+          spark_python_task:
+            python_file: ./report.py
+            parameters: ["--case", "{{job.parameters.case}}", "--run_id", "{{job.parameters.run_id}}"]
+
+    spike_s1_reset:
+      name: spike_s1_reset
+      max_concurrent_runs: 1
+      parameters:
+        - name: case
+          default: reset
+        - name: run_id
+          default: local
+      environments:
+        - environment_key: default
+          spec:
+            environment_version: "4"
+      tasks:
+        - task_key: reset
+          environment_key: default
+          spark_python_task:
+            python_file: ./snapshot_ingest.py
+            parameters: ["--case", "{{job.parameters.case}}", "--run_id", "{{job.parameters.run_id}}", "--task_run_id", "{{task.run_id}}"]

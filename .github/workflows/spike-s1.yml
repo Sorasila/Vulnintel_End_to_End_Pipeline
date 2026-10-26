@@ -1,0 +1,94 @@
+name: spike-s1
+
+# Spike S1 (แผนสำรอง snapshot): Neon -> CSV snapshot ใน UC Volume -> Auto Loader -> SDP SCD2
+# (create_auto_cdc_from_snapshot_flow) ผล probe ถูกเขียนลงตาราง vulnintel_dev.ops.spike_s1_results
+# แล้ว step สุดท้ายสรุปลง Job summary ส่วน CDC connector ทำเองใน Databricks UI (ดู docs/spikes/S1.md)
+# กด "Run workflow" เสมอ (ไม่ใช้ "Re-run jobs") ลำดับ case: seed -> mutate (reset = เริ่มใหม่)
+
+on:
+  workflow_dispatch:
+    inputs:
+      case:
+        description: "seed = สร้างตาราง+10 แถวแล้ว snapshot รอบแรก, mutate = แก้ 2 ลบ 1 เพิ่ม 1 แล้ว snapshot รอบสอง, reset = ล้างทุกอย่าง"
+        type: choice
+        options: [seed, mutate, reset]
+        default: seed
+
+permissions:
+  contents: read
+
+# งาน Databricks ทุก workflow ใช้ group เดียวกัน ไม่ให้รันชนกัน
+concurrency:
+  group: databricks-pipelines
+  cancel-in-progress: false
+
+env:
+  DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
+  DATABRICKS_AUTH_TYPE: oauth-m2m
+  DATABRICKS_CLIENT_ID: ${{ secrets.DATABRICKS_CLIENT_ID }}
+  DATABRICKS_CLIENT_SECRET: ${{ secrets.DATABRICKS_CLIENT_SECRET }}
+  DATABRICKS_WAREHOUSE_ID: ${{ vars.DATABRICKS_WAREHOUSE_ID }}
+  CASE: ${{ inputs.case }}
+  # GITHUB_RUN_ID ไม่เปลี่ยนเมื่อ "Re-run jobs" จึงต่อ attempt ด้วย
+  SPIKE_RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}
+
+jobs:
+  s1:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # shell: bash = bash -eo pipefail: ถ้า step ที่ pipe ไป tee ล้ม step ต้องล้มตาม
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Python dependencies
+        run: pip install "psycopg[binary]>=3.1" "databricks-sdk>=0.40" "databricks-sql-connector>=3.4"
+
+      - uses: databricks/setup-cli@v1.22.1
+
+      # NEON_DATABASE_URL ใส่เฉพาะ step ที่ต้องใช้ (ไม่อยู่ใน env ระดับ workflow) และห้าม echo
+      - name: Update Neon CMDB
+        env:
+          NEON_DATABASE_URL: ${{ secrets.NEON_DATABASE_URL }}
+        run: python spikes/s1/neon_cmdb.py --case "$CASE" 2>&1 | tee "$RUNNER_TEMP/neon.log"
+
+      - name: Upload snapshot (Files API)
+        env:
+          NEON_DATABASE_URL: ${{ secrets.NEON_DATABASE_URL }}
+        run: python spikes/s1/snapshot_upload.py --case "$CASE" 2>&1 | tee "$RUNNER_TEMP/upload.log"
+
+      - name: Deploy bundle
+        working-directory: spikes/s1
+        run: databricks bundle deploy -t dev 2>&1 | tee "$RUNNER_TEMP/deploy.log"
+
+      # seed -> spike_s1_snapshot_full (pipeline full refresh), mutate -> spike_s1_snapshot, reset -> spike_s1_reset
+      - name: Run job (serverless)
+        working-directory: spikes/s1
+        run: |
+          case "$CASE" in
+            seed)   JOB=spike_s1_snapshot_full ;;
+            mutate) JOB=spike_s1_snapshot ;;
+            reset)  JOB=spike_s1_reset ;;
+          esac
+          databricks bundle run "$JOB" -t dev \
+            --params "case=$CASE,run_id=$SPIKE_RUN_ID" 2>&1 | tee "$RUNNER_TEMP/bundle_run.log"
+
+      # always(): ให้เห็นผลที่ job เขียนไว้ แม้ step ก่อนหน้าล้ม log ถูก tee ไว้ที่ $RUNNER_TEMP
+      - name: Summarize results
+        if: always()
+        run: |
+          for name in neon upload deploy bundle_run; do
+            log="$RUNNER_TEMP/$name.log"
+            if [ -f "$log" ]; then
+              { echo "### $name output (last 40 lines)"; echo '```'; tail -n 40 "$log"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+            else
+              echo "### $name: step did not run (no log)" >> "$GITHUB_STEP_SUMMARY"
+            fi
+          done
+          python spikes/s1/fetch_results.py --case "$CASE" --run_id "$SPIKE_RUN_ID"
