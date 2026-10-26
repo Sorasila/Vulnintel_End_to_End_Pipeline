@@ -1,0 +1,29 @@
+# UC schema 4 ชั้น และ volume 2 ตัว (volume อยู่ใน schema ops) ใน catalog ${var.catalog}
+# ชื่อ volume ตามผล S2: ชื่อขึ้นต้นด้วย "_" ใช้ได้
+# volume อ้าง ${resources.schemas.ops.name} เพื่อให้ deploy สร้าง schema ก่อน volume
+resources:
+  schemas:
+    bronze:
+      name: bronze
+      catalog_name: ${var.catalog}
+    silver:
+      name: silver
+      catalog_name: ${var.catalog}
+    gold:
+      name: gold
+      catalog_name: ${var.catalog}
+    ops:
+      name: ops
+      catalog_name: ${var.catalog}
+
+  volumes:
+    landing:
+      name: landing
+      catalog_name: ${var.catalog}
+      schema_name: ${resources.schemas.ops.name}
+      volume_type: MANAGED
+    checkpoints:
+      name: _checkpoints
+      catalog_name: ${var.catalog}
+      schema_name: ${resources.schemas.ops.name}
+      volume_type: MANAGED

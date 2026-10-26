@@ -1,0 +1,50 @@
+# VulnIntel asset bundle: โครงของ pipeline ทั้งหมด (UC schema/volume ตอนนี้ ส่วน job/pipeline จะเพิ่มใน resources/ ภายหลัง)
+# host และ auth ไม่ได้ระบุที่นี่: CLI อ่านจาก env DATABRICKS_HOST, DATABRICKS_AUTH_TYPE=oauth-m2m,
+#   DATABRICKS_CLIENT_ID, DATABRICKS_CLIENT_SECRET (GitHub Secrets ใน CI) ห้ามเขียน host/secret/id ลงไฟล์
+# variable service_principal_id ไม่มีค่า default: CI ส่งผ่าน env BUNDLE_VAR_service_principal_id (ค่าเดียวกับ client id)
+#   ถ้ารันเองในเครื่อง: databricks bundle validate -t dev --var service_principal_id=<application-id>
+# resource key ต้องไม่ซ้ำข้ามประเภท (บทเรียนจาก S1)
+bundle:
+  name: vulnintel
+
+include:
+  - resources/*.yml
+
+# mode: development เติม prefix (dev_<user>_) หน้าชื่อ UC schema ด้วย และ presets.name_prefix: '' เอา prefix ออกไม่ได้
+# (ยืนยันจาก CI bundle-validate ใน PR #9 และจาก CLI: schema ถูก prefix เว้นแต่ตั้ง flag นี้ ส่วน volume ไม่เคยถูก prefix)
+# schema ต้องชื่อ bronze/silver/gold/ops เป๊ะในทั้งสอง catalog จึงเปิด flag นี้ (กระทบเฉพาะ dev เพราะ mode production ไม่ใส่ prefix อยู่แล้ว)
+# job/pipeline ใน dev ยังมี prefix "[dev ...]" ตามปกติ
+# job bundle-validate ใน CI ตรวจชื่อ schema ของ dev ทุกครั้ง
+experimental:
+  skip_name_prefix_for_schema: true
+
+# ไม่อัปโหลด spike bundle (spikes/**) และเอกสาร (docs/**) ไปที่ bundle root ใน workspace
+sync:
+  exclude:
+    - spikes/**
+    - docs/**
+
+variables:
+  catalog:
+    description: Unity Catalog ที่ resource ทั้งหมดอยู่ใน (ตั้งค่าต่อ target)
+  service_principal_id:
+    description: Application ID ของ service principal vulnintel-ci (เท่ากับ OAuth client id ไม่ใช่ secret) ใช้เป็น run_as ของทุก target
+
+targets:
+  dev:
+    mode: development
+    default: true
+    variables:
+      catalog: vulnintel_dev
+    run_as:
+      service_principal_name: ${var.service_principal_id}
+
+  prod:
+    mode: production
+    variables:
+      catalog: vulnintel
+    run_as:
+      service_principal_name: ${var.service_principal_id}
+    workspace:
+      # mode: production ไม่ยอมให้ root_path ผูกกับ user คนใดคนหนึ่ง จึงวางที่ /Workspace/Shared
+      root_path: /Workspace/Shared/.bundle/${bundle.name}/${bundle.target}
